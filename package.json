@@ -1,0 +1,19 @@
+{
+  "name": "ores-otel-sidecar-contract-tests",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "npm run test:playwright && npm run test:puppeteer && npm run test:selenium",
+    "test:playwright": "playwright test --config=browser/playwright.config.mjs",
+    "test:puppeteer": "node --test browser/puppeteer.test.mjs",
+    "test:selenium": "node --test browser/selenium.test.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0",
+    "puppeteer-core": "^24.16.0",
+    "selenium-webdriver": "^4.35.0"
+  }
+}

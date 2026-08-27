@@ -12,3 +12,37 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m unittest discover -s tests -v
+
+  browsers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ores-otel/ores-otel-sidecar.rs
+          path: sidecar
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --locked --bin ores-otel-sidecar
+        working-directory: sidecar
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: Serve sidecar and run Playwright, Puppeteer, and Selenium
+        env:
+          SIDECAR_URL: http://127.0.0.1:19090
+          ORES_OTEL_SIDECAR_BIND: 127.0.0.1:19090
+        run: |
+          set -euo pipefail
+          ./sidecar/target/debug/ores-otel-sidecar &
+          sidecar_pid=$!
+          trap 'kill "$sidecar_pid" 2>/dev/null || true' EXIT
+          for i in $(seq 1 50); do
+            if curl -sf "$SIDECAR_URL/healthz" >/dev/null; then
+              break
+            fi
+            sleep 0.1
+          done
+          curl -sf "$SIDECAR_URL/healthz" >/dev/null
+          npm test
