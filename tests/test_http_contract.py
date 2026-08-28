@@ -16,7 +16,13 @@ import urllib.request
 ALLOWED_GET = ("/healthz", "/health", "/readyz", "/ready", "/metrics")
 FORBIDDEN_METHODS = ("POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE", "CONNECT")
 FORBIDDEN_PATHS = ("/", "/admin", "/healthz/../secret", "/metrics/../etc/passwd")
-REQUIRED_HEADERS = ("connection", "cache-control", "x-content-type-options")
+REQUIRED_HEADERS = (
+    "connection",
+    "cache-control",
+    "x-content-type-options",
+    "x-frame-options",
+    "content-security-policy",
+)
 
 
 def live_url() -> str | None:
@@ -52,6 +58,11 @@ class ContractMatrix(unittest.TestCase):
     def test_stdio_is_not_the_probe_interface(self):
         self.assertTrue(live_url() is None or live_url().startswith("http"))
         self.assertNotIn("stdin", ALLOWED_GET)
+
+    def test_required_hardening_headers_are_named(self):
+        self.assertIn("x-frame-options", REQUIRED_HEADERS)
+        self.assertIn("content-security-policy", REQUIRED_HEADERS)
+        self.assertIn("cache-control", REQUIRED_HEADERS)
 
     def test_query_strings_do_not_create_new_routes(self):
         self.assertEqual("/readyz?foo=1".split("?", 1)[0], "/readyz")
@@ -99,6 +110,13 @@ class LiveSidecar(unittest.TestCase):
         self.assertEqual(headers.get("connection"), "close")
         self.assertEqual(headers.get("cache-control"), "no-store")
         self.assertEqual(headers.get("x-content-type-options"), "nosniff")
+        self.assertEqual(headers.get("x-frame-options"), "DENY")
+        self.assertEqual(headers.get("content-security-policy"), "default-src 'none'")
+
+    def test_head_healthz_omits_body(self):
+        status, _, body = self._request("HEAD", "/healthz")
+        self.assertEqual(status, 200)
+        self.assertEqual(body, "")
 
     def test_post_put_and_trace_are_rejected(self):
         for method in ("POST", "PUT", "TRACE"):
