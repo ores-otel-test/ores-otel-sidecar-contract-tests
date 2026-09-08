@@ -3,42 +3,61 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   python:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: "3.12"
       - run: python -m unittest discover -s tests -v
 
   browsers:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ores-otel/ores-otel-sidecar.rs
+          ref: e20f4f5802b3257a4521fc4192456cdca18a9630
           path: sidecar
-      - uses: dtolnay/rust-toolchain@stable
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
       - run: cargo build --locked --bin ores-otel-sidecar
         working-directory: sidecar
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "22"
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
+      - run: npm audit --audit-level=high
       - name: Serve sidecar and run Playwright, Puppeteer, and Selenium
         env:
           SIDECAR_URL: http://127.0.0.1:19090
           ORES_OTEL_SIDECAR_BIND: 127.0.0.1:19090
         run: |
           set -euo pipefail
-          ./sidecar/target/debug/ores-otel-sidecar &
+          (
+            cd sidecar
+            exec ./target/debug/ores-otel-sidecar
+          ) &
           sidecar_pid=$!
           trap 'kill "$sidecar_pid" 2>/dev/null || true' EXIT
-          for i in $(seq 1 50); do
+          for _probe_attempt in {1..50}; do
             if curl -sf "$SIDECAR_URL/healthz" >/dev/null; then
               break
             fi

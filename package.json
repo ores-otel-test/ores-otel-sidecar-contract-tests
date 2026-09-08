@@ -13,7 +13,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.55.0",
-    "puppeteer-core": "^24.16.0",
+    "puppeteer-core": "25.10.0",
     "selenium-webdriver": "^4.35.0"
   }
 }
