@@ -111,7 +111,10 @@ class LiveSidecar(unittest.TestCase):
         self.assertEqual(headers.get("cache-control"), "no-store")
         self.assertEqual(headers.get("x-content-type-options"), "nosniff")
         self.assertEqual(headers.get("x-frame-options"), "DENY")
-        self.assertEqual(headers.get("content-security-policy"), "default-src 'none'")
+        self.assertEqual(
+            headers.get("content-security-policy"),
+            "default-src 'none'; connect-src 'self'",
+        )
 
     def test_head_healthz_omits_body(self):
         status, _, body = self._request("HEAD", "/healthz")
