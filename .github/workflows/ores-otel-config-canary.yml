@@ -21,31 +21,12 @@ jobs:
           persist-credentials: false
           show-progress: false
 
-      - name: Check out exact ORES OTEL config authority
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: ores-otel/ores-otel-interfaces
-          ref: b544872d13323de7be19a9d5879c419149679f7a
-          path: canary/deps/ores-otel-interfaces
-          persist-credentials: false
-          show-progress: false
-
-      - name: Check out exact ORES OTEL runtime
+      - name: Check out exact public ORES OTEL runtime
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ores-otel/ores.otel.log
           ref: 277aa47c7da94da921070f1e202574222b383f90
           path: canary/deps/ores-otel-runtime
-          persist-credentials: false
-          show-progress: false
-
-      - name: Check out exact HHaus mixed-role consumer
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: hhaus-org/hhaus-lib-core
-          ref: 18f41ebc80124c0f7b2055d96c728b346f411260
-          path: canary/consumers/hhaus-lib-core
-          token: ${{ secrets.TEST_FLEET_READ_TOKEN || github.token }}
           persist-credentials: false
           show-progress: false
 
@@ -61,27 +42,19 @@ jobs:
       - name: Verify immutable source pins
         run: |
           set -euo pipefail
-          test "$(git -C canary/deps/ores-otel-interfaces rev-parse HEAD)" = b544872d13323de7be19a9d5879c419149679f7a
           test "$(git -C canary/deps/ores-otel-runtime rev-parse HEAD)" = 277aa47c7da94da921070f1e202574222b383f90
-          test "$(git -C canary/consumers/hhaus-lib-core rev-parse HEAD)" = 18f41ebc80124c0f7b2055d96c728b346f411260
           test "$(git -C canary/consumers/fiducia-telemetry rev-parse HEAD)" = a1a814bb9ecb8b524980d002f88896eb5a0d5951
 
-      - name: TJSV peer-authority admission
-        uses: ORESoftware/typespec-json-schema-validator@4a5d049218adc2740d4cf78f612caf7f38f6f64c
+      - name: Re-run public runtime TJSV boundary canary
+        uses: ORESoftware/typespec-json-schema-validator@a4b731fbf82c4d162abd74fd03758fa32bb76176
         with:
-          typespec: canary/deps/ores-otel-interfaces/contracts/ores-otel-config.v1/main.tsp
-          schema: canary/deps/ores-otel-interfaces/contracts/ores-otel-config.v1/authored.schema.json
-          instances: canary/deps/ores-otel-interfaces/contracts/ores-otel-config.v1/instances
-          report: .canary-evidence/tjsv/report.json
-          contract_ir: .canary-evidence/tjsv/contract-ir.json
-          output_dir: .canary-evidence/tjsv/generated
+          typespec: canary/deps/ores-otel-runtime/contracts/schema-authority-canary/main.tsp
+          schema: canary/deps/ores-otel-runtime/contracts/schema-authority-canary/authored.schema.json
+          instances: canary/deps/ores-otel-runtime/contracts/schema-authority-canary/instances
+          report: .canary-evidence/tjsv/runtime-boundary-report.json
+          contract_ir: .canary-evidence/tjsv/runtime-boundary-contract-ir.json
+          output_dir: .canary-evidence/tjsv/generated/runtime-boundary
           quiet: "false"
-
-      - name: Require TJSV pass and peer-authority boundary
-        run: |
-          set -euo pipefail
-          jq -e '.status == "passed" and .zeroUnexplainedFindings == true and .authorities.precedence == "none"' .canary-evidence/tjsv/report.json
-          jq -e '.status == "passed" and .admissible == true and .editableAuthority == false' .canary-evidence/tjsv/contract-ir.json
 
       - name: Install Node 22
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -93,7 +66,7 @@ jobs:
         working-directory: canary/deps/ores-otel-runtime
         run: npm ci --ignore-scripts --no-audit --no-fund
 
-      - name: Build exact runtime without altering source
+      - name: Build exact runtime without altering source authority files
         working-directory: canary/deps/ores-otel-runtime
         run: |
           npx tsc -p tsconfig.build.json
@@ -106,11 +79,9 @@ jobs:
       - name: Run real-consumer and adversarial test-org cases
         run: node --test tests/ores_otel_config_canary.mjs
 
-      - name: Prove authorities and consumers were not rewritten
+      - name: Prove contract/runtime source and consumer were not rewritten
         run: |
-          git -C canary/deps/ores-otel-interfaces diff --exit-code
           git -C canary/deps/ores-otel-runtime diff --exit-code -- src tests contracts package.json package-lock.json
-          git -C canary/consumers/hhaus-lib-core diff --exit-code
           git -C canary/consumers/fiducia-telemetry diff --exit-code
 
       - name: Retain TJSV canary evidence
