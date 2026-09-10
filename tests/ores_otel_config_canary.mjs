@@ -17,12 +17,50 @@ const {
   resolveOresOtelExporterEndpoint,
 } = configApi;
 
+const MIXED = `
+version = 1
+
+[common]
+enabled = true
+
+[common.logging]
+enabled = true
+level = "info"
+console = true
+auto_send = false
+
+[common.tracing]
+enabled = true
+sample_ratio = 0.1
+propagators = ["tracecontext", "baggage"]
+
+[common.metrics]
+enabled = true
+
+[client]
+service_name = "test-client"
+
+[client.logging]
+level = "warn"
+
+[client.exporter]
+protocol = "otlp_http"
+endpoint_env = "OTEL_EXPORTER_OTLP_ENDPOINT"
+
+[server]
+service_name = "test-server"
+
+[server.exporter]
+protocol = "otlp_grpc"
+endpoint_env = "OTEL_EXPORTER_OTLP_ENDPOINT"
+`;
+
 async function consumer(name) {
   return readFile(join(consumersRoot, name, '.ores-otel.toml'), 'utf8');
 }
 
-test('HHaus same-repo client/server policy requires explicit role selection', async () => {
-  const parsed = parseOresOtelToml(await consumer('hhaus-lib-core'));
+test('same-repo client/server policy requires explicit role selection', () => {
+  const parsed = parseOresOtelToml(MIXED);
   assert.throws(
     () => resolveOresOtelConfig(parsed, { env: {} }),
     /both client and server sections exist/u,
@@ -31,10 +69,10 @@ test('HHaus same-repo client/server policy requires explicit role selection', as
   const client = resolveOresOtelConfig(parsed, { role: 'client', env: {} });
   const server = resolveOresOtelConfig(parsed, { role: 'server', env: {} });
   assert.equal(client.role, 'client');
-  assert.equal(client.serviceName, 'hhaus-client');
+  assert.equal(client.serviceName, 'test-client');
   assert.equal(client.logging.level, 'warn');
   assert.equal(server.role, 'server');
-  assert.equal(server.serviceName, 'hhaus-server');
+  assert.equal(server.serviceName, 'test-server');
   assert.equal(server.logging.level, 'info');
 });
 
@@ -81,21 +119,20 @@ test('literal exporter endpoints are rejected; only env-variable names are admit
   assert.throws(() => parseOresOtelToml(mutated), /uppercase environment-variable name/u);
 });
 
-test('trace sampling stays bounded and propagators stay unique/allowlisted', async () => {
-  const source = await consumer('hhaus-lib-core');
+test('trace sampling stays bounded and propagators stay unique/allowlisted', () => {
   assert.throws(
-    () => parseOresOtelToml(source.replace('sample_ratio = 0.1', 'sample_ratio = 1.01')),
+    () => parseOresOtelToml(MIXED.replace('sample_ratio = 0.1', 'sample_ratio = 1.01')),
     /between 0 and 1/u,
   );
   assert.throws(
-    () => parseOresOtelToml(source.replace(
+    () => parseOresOtelToml(MIXED.replace(
       'propagators = ["tracecontext", "baggage"]',
       'propagators = ["tracecontext", "tracecontext"]',
     )),
     /must not contain duplicates/u,
   );
   assert.throws(
-    () => parseOresOtelToml(source.replace(
+    () => parseOresOtelToml(MIXED.replace(
       'propagators = ["tracecontext", "baggage"]',
       'propagators = ["tracecontext", "x-vendor"]',
     )),
