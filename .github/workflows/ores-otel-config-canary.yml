@@ -2,6 +2,8 @@ name: ORES OTEL config canary
 
 on:
   pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -10,10 +12,11 @@ permissions:
 jobs:
   config-canary:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     env:
       ORES_OTEL_RUNTIME: ${{ github.workspace }}/canary/deps/ores-otel-runtime
       ORES_OTEL_CONSUMERS: ${{ github.workspace }}/canary/consumers
+      TJSV_REF: a4b731fbf82c4d162abd74fd03758fa32bb76176
     steps:
       - name: Check out test harness
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -39,13 +42,40 @@ jobs:
           persist-credentials: false
           show-progress: false
 
+      - name: Check out exact TJSV implementation for adversarial controls
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ORESoftware/typespec-json-schema-validator
+          ref: ${{ env.TJSV_REF }}
+          path: canary/deps/tjsv
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install Node 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          package-manager-cache: false
+
       - name: Verify immutable source pins
         run: |
           set -euo pipefail
           test "$(git -C canary/deps/ores-otel-runtime rev-parse HEAD)" = 277aa47c7da94da921070f1e202574222b383f90
           test "$(git -C canary/consumers/fiducia-telemetry rev-parse HEAD)" = a1a814bb9ecb8b524980d002f88896eb5a0d5951
+          test "$(git -C canary/deps/tjsv rev-parse HEAD)" = "$TJSV_REF"
+          test "${#TJSV_REF}" -eq 40
+          case "$TJSV_REF" in *[!0-9a-f]*) exit 1 ;; esac
 
-      - name: Re-run public runtime TJSV boundary canary
+      - name: Seal independently authored peer authorities before comparison
+        run: |
+          set -euo pipefail
+          mkdir -p .canary-evidence/tjsv
+          sha256sum \
+            canary/deps/ores-otel-runtime/contracts/schema-authority-canary/main.tsp \
+            canary/deps/ores-otel-runtime/contracts/schema-authority-canary/authored.schema.json \
+            > .canary-evidence/tjsv/authored-authorities.sha256
+
+      - name: Transpile TypeSpec to comparison Schema B and compare with authored Schema A
         uses: ORESoftware/typespec-json-schema-validator@a4b731fbf82c4d162abd74fd03758fa32bb76176
         with:
           typespec: canary/deps/ores-otel-runtime/contracts/schema-authority-canary/main.tsp
@@ -56,11 +86,70 @@ jobs:
           output_dir: .canary-evidence/tjsv/generated/runtime-boundary
           quiet: "false"
 
-      - name: Install Node 22
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "22"
-          package-manager-cache: false
+      - name: Prove Schema B is generated evidence and authored peers were not rewritten
+        run: |
+          set -euo pipefail
+          test -f .canary-evidence/tjsv/generated/runtime-boundary/typespec.generated.schema.json
+          test -f .canary-evidence/tjsv/runtime-boundary-report.json
+          test -f .canary-evidence/tjsv/runtime-boundary-contract-ir.json
+          sha256sum -c .canary-evidence/tjsv/authored-authorities.sha256
+          git -C canary/deps/ores-otel-runtime diff --exit-code -- \
+            contracts/schema-authority-canary/main.tsp \
+            contracts/schema-authority-canary/authored.schema.json
+
+      - name: Install exact TJSV dependencies for one-sided drift controls
+        working-directory: canary/deps/tjsv
+        run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+
+      - name: Reject JSON-Schema-only and TypeSpec-only authority drift
+        shell: bash
+        run: |
+          set -euo pipefail
+          authority=canary/deps/ores-otel-runtime/contracts/schema-authority-canary
+          tjsv=canary/deps/tjsv/bin/typespec-json-schema-validator.mjs
+          mkdir -p .canary-evidence/tjsv/drift
+
+          cp "$authority/authored.schema.json" "$authority/drift-authored.schema.json"
+          node - "$authority/drift-authored.schema.json" <<'NODE'
+          const fs = require('node:fs');
+          const path = process.argv[2];
+          const doc = JSON.parse(fs.readFileSync(path, 'utf8'));
+          doc.$defs.RuntimeBoundary.properties.supportsShutdown.type = 'string';
+          fs.writeFileSync(path, JSON.stringify(doc, null, 2) + '\n');
+          NODE
+
+          set +e
+          node "$tjsv" check \
+            --typespec="$authority/main.tsp" \
+            --schema="$authority/drift-authored.schema.json" \
+            --instances="$authority/instances" \
+            --report=.canary-evidence/tjsv/drift/schema-a-only-report.json \
+            --output-dir=.canary-evidence/tjsv/drift/schema-a-only-generated \
+            --max-probes=64 \
+            --quiet=true
+          schema_status=$?
+          set -e
+          test "$schema_status" -ne 0
+
+          sed 's/supportsShutdown: boolean;/supportsShutdown: string;/' \
+            "$authority/main.tsp" > "$authority/drift-main.tsp"
+          grep -F 'supportsShutdown: string;' "$authority/drift-main.tsp"
+
+          set +e
+          node "$tjsv" check \
+            --typespec="$authority/drift-main.tsp" \
+            --schema="$authority/authored.schema.json" \
+            --instances="$authority/instances" \
+            --report=.canary-evidence/tjsv/drift/typespec-only-report.json \
+            --output-dir=.canary-evidence/tjsv/drift/typespec-only-generated \
+            --max-probes=64 \
+            --quiet=true
+          typespec_status=$?
+          set -e
+          test "$typespec_status" -ne 0
+
+          rm -f "$authority/drift-authored.schema.json" "$authority/drift-main.tsp"
+          sha256sum -c .canary-evidence/tjsv/authored-authorities.sha256
 
       - name: Install exact runtime dependencies
         working-directory: canary/deps/ores-otel-runtime
@@ -81,12 +170,14 @@ jobs:
 
       - name: Prove contract/runtime source and consumer were not rewritten
         run: |
+          set -euo pipefail
+          sha256sum -c .canary-evidence/tjsv/authored-authorities.sha256
           git -C canary/deps/ores-otel-runtime diff --exit-code -- src tests contracts package.json package-lock.json
           git -C canary/consumers/fiducia-telemetry diff --exit-code
 
       - name: Retain TJSV canary evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ores-otel-config-canary-${{ github.event.pull_request.head.sha || github.sha }}
           path: .canary-evidence
