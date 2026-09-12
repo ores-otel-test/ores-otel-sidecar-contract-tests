@@ -12,6 +12,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  SIDECAR_REF: d576d010a634215703ee70c2620a1361f6251b5d
+
 jobs:
   python:
     runs-on: ubuntu-24.04
@@ -33,12 +36,22 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ores-otel/ores-otel-sidecar.rs
-          ref: e20f4f5802b3257a4521fc4192456cdca18a9630
+          ref: ${{ env.SIDECAR_REF }}
           path: sidecar
           persist-credentials: false
+      - name: Verify exact sidecar source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C sidecar rev-parse HEAD)" = "$SIDECAR_REF"
+          grep -Fqx 'load = false' sidecar/.cli-flags.toml
+          grep -Fqx 'files = []' sidecar/.cli-flags.toml
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
       - run: cargo build --locked --bin ores-otel-sidecar
         working-directory: sidecar
+      - name: Exercise owner startup admission before browser smoke
+        working-directory: sidecar
+        run: ./target/debug/ores-otel-sidecar preflight
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "22"

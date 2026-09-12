@@ -1,0 +1,164 @@
+name: Sidecar peer-authority TJSV canary
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/sidecar-peer-authority-canary.yml"
+      - ".github/workflows/test.yml"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/sidecar-peer-authority-canary.yml"
+      - ".github/workflows/test.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sidecar-peer-authority-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SIDECAR_REF: d576d010a634215703ee70c2620a1361f6251b5d
+  TJSV_REF: 93dd73cb246a09b0a1c62d7192cc62ca6ecbe405
+  AUTHORITY: canary/deps/sidecar/contracts/sidecar
+  EVIDENCE: .canary-evidence/sidecar-tjsv
+
+jobs:
+  peer-authority:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out external test harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          show-progress: false
+
+      - name: Check out exact canonical sidecar producer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ores-otel/ores-otel-sidecar.rs
+          ref: ${{ env.SIDECAR_REF }}
+          path: canary/deps/sidecar
+          persist-credentials: false
+          show-progress: false
+
+      - name: Check out exact TJSV implementation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ORESoftware/typespec-json-schema-validator
+          ref: ${{ env.TJSV_REF }}
+          path: canary/deps/tjsv
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install Node 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          package-manager-cache: false
+
+      - name: Verify immutable source identities and independent authorities
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C canary/deps/sidecar rev-parse HEAD)" = "$SIDECAR_REF"
+          test "$(git -C canary/deps/tjsv rev-parse HEAD)" = "$TJSV_REF"
+          test -s "$AUTHORITY/main.tsp"
+          test -s "$AUTHORITY/authored.schema.json"
+          grep -Fq 'https://json-schema.org/draft/2020-12/schema' "$AUTHORITY/authored.schema.json"
+          grep -Fq '@typespec/json-schema' "$AUTHORITY/main.tsp"
+          mkdir -p "$EVIDENCE/generated"
+          sha256sum "$AUTHORITY/main.tsp" "$AUTHORITY/authored.schema.json" > "$EVIDENCE/authored.sha256"
+
+      - name: Transpile TypeSpec to Schema B and compare with authored Schema A
+        uses: ORESoftware/typespec-json-schema-validator@93dd73cb246a09b0a1c62d7192cc62ca6ecbe405
+        with:
+          typespec: canary/deps/sidecar/contracts/sidecar/main.tsp
+          schema: canary/deps/sidecar/contracts/sidecar/authored.schema.json
+          instances: canary/deps/sidecar/contracts/sidecar/instances
+          report: .canary-evidence/sidecar-tjsv/report.json
+          contract_ir: .canary-evidence/sidecar-tjsv/contract-ir.json
+          output_dir: .canary-evidence/sidecar-tjsv/generated
+          quiet: "false"
+
+      - name: Prove generated Schema B is evidence only
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$EVIDENCE/generated/typespec.generated.schema.json"
+          test -s "$EVIDENCE/report.json"
+          test -s "$EVIDENCE/contract-ir.json"
+          grep -Fq 'https://json-schema.org/draft/2020-12/schema' "$EVIDENCE/generated/typespec.generated.schema.json"
+          sha256sum -c "$EVIDENCE/authored.sha256"
+          git -C canary/deps/sidecar diff --exit-code -- contracts/sidecar/main.tsp contracts/sidecar/authored.schema.json
+
+      - name: Install exact TJSV dependencies for negative controls
+        working-directory: canary/deps/tjsv
+        run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+
+      - name: Reject JSON-Schema-only authority drift
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE/drift"
+          cp "$AUTHORITY/authored.schema.json" "$EVIDENCE/drift/authored.schema.json"
+          node - "$EVIDENCE/drift/authored.schema.json" <<'NODE'
+          const fs = require('node:fs');
+          const path = process.argv[2];
+          const doc = JSON.parse(fs.readFileSync(path, 'utf8'));
+          doc.$defs.RuntimeUpdateMode.enum = ['disabled', 'send-only'];
+          fs.writeFileSync(path, JSON.stringify(doc, null, 2) + '\n');
+          NODE
+          set +e
+          node canary/deps/tjsv/bin/typespec-json-schema-validator.mjs check \
+            --typespec="$AUTHORITY/main.tsp" \
+            --schema="$EVIDENCE/drift/authored.schema.json" \
+            --instances="$AUTHORITY/instances" \
+            --report="$EVIDENCE/drift/schema-a-only-report.json" \
+            --output-dir="$EVIDENCE/drift/schema-a-only-generated" \
+            --max-probes=64 \
+            --quiet=true
+          status=$?
+          set -e
+          test "$status" -ne 0
+
+      - name: Reject TypeSpec-only authority drift
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed 's/receiveOnly: "receive-only"/receiveOnly: "send-only"/' \
+            "$AUTHORITY/main.tsp" > "$EVIDENCE/drift/main.tsp"
+          grep -Fq 'receiveOnly: "send-only"' "$EVIDENCE/drift/main.tsp"
+          set +e
+          node canary/deps/tjsv/bin/typespec-json-schema-validator.mjs check \
+            --typespec="$EVIDENCE/drift/main.tsp" \
+            --schema="$AUTHORITY/authored.schema.json" \
+            --instances="$AUTHORITY/instances" \
+            --report="$EVIDENCE/drift/typespec-only-report.json" \
+            --output-dir="$EVIDENCE/drift/typespec-only-generated" \
+            --max-probes=64 \
+            --quiet=true
+          status=$?
+          set -e
+          test "$status" -ne 0
+
+      - name: Prove authored authorities stayed immutable
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum -c "$EVIDENCE/authored.sha256"
+          git -C canary/deps/sidecar diff --exit-code -- contracts/sidecar/main.tsp contracts/sidecar/authored.schema.json
+
+      - name: Retain semantic evidence best-effort
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sidecar-peer-authority-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .canary-evidence
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
