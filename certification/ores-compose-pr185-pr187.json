@@ -1,0 +1,26 @@
+{
+  "schema": "ores.test-org-certification/v1",
+  "targets": [
+    {
+      "repository": "ORESoftware/ores-compose",
+      "pullRequest": 185,
+      "sha": "a2f4db75915f9556c8024ced6184cddbcd00df48",
+      "required": [
+        "rust-ubuntu",
+        "rust-macos",
+        "formal"
+      ]
+    },
+    {
+      "repository": "ORESoftware/ores-compose",
+      "pullRequest": 187,
+      "sha": "6b5d8d06887f67a0e9a4316e6ebb6acad685e378",
+      "required": [
+        "rust-ubuntu",
+        "formal",
+        "contract-authority"
+      ]
+    }
+  ],
+  "reason": "source-org Actions jobs failed before executing steps; certify exact public heads in funded test org"
+}

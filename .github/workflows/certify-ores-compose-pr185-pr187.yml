@@ -1,0 +1,81 @@
+name: certify ores-compose PRs 185 and 187
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/certify-ores-compose-pr185-pr187.yml
+      - certification/ores-compose-pr185-pr187.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: pr185-ubuntu
+            sha: a2f4db75915f9556c8024ced6184cddbcd00df48
+            os: ubuntu-24.04
+          - label: pr185-macos
+            sha: a2f4db75915f9556c8024ced6184cddbcd00df48
+            os: macos-15
+          - label: pr187-ubuntu
+            sha: 6b5d8d06887f67a0e9a4316e6ebb6acad685e378
+            os: ubuntu-24.04
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ORESoftware/ores-compose
+          ref: ${{ matrix.sha }}
+          persist-credentials: false
+          path: source
+          fetch-depth: 1
+      - name: Assert exact source SHA
+        run: test "$(git -C source rev-parse HEAD)" = "${{ matrix.sha }}"
+      - name: Install reviewed Rust components
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
+          rustup default 1.98.1
+      - name: Format
+        run: cd source && cargo fmt --all --check
+      - name: Clippy
+        run: cd source && cargo clippy --all-targets --all-features -- -D warnings
+      - name: Tests
+        run: cd source && cargo test --all-targets --all-features
+      - name: Compose contract authority test
+        if: matrix.label == 'pr187-ubuntu'
+        run: cd source && cargo test --test contract_authority --all-features
+
+  formal:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: pr185
+            sha: a2f4db75915f9556c8024ced6184cddbcd00df48
+          - label: pr187
+            sha: 6b5d8d06887f67a0e9a4316e6ebb6acad685e378
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ORESoftware/ores-compose
+          ref: ${{ matrix.sha }}
+          persist-credentials: false
+          path: source
+          fetch-depth: 1
+      - name: Assert exact source SHA
+        run: test "$(git -C source rev-parse HEAD)" = "${{ matrix.sha }}"
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.95.0
+      - name: Exhaust orchestration dependency state space
+        run: |
+          rustc --edition=2021 -D warnings source/conformance/formal_model.rs -o /tmp/formal-model
+          /tmp/formal-model
